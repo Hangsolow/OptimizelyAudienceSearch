@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Pack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "6.0.x"
+
+      - name: Add Optimizely NuGet source
+        run: |
+          dotnet nuget add source https://api.nuget.optimizely.com/v3/index.json \
+            --name optimizely \
+            --username ci \
+            --password ${{ secrets.OPTIMIZELY_NUGET_TOKEN }} \
+            --store-password-in-clear-text
+        env:
+          OPTIMIZELY_NUGET_TOKEN: ${{ secrets.OPTIMIZELY_NUGET_TOKEN }}
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Pack (validation)
+        run: dotnet pack --no-build --configuration Release --output ./artifacts
