@@ -4,32 +4,61 @@ on:
   push:
     tags:
       - "v*.*.*"
+    branches:
+      - release
+
+permissions:
+  contents: write
 
 jobs:
-  publish:
-    name: Pack & Publish to NuGet.org
+  release:
+    name: Pack & Create GitHub Release
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            IS_PRERELEASE="false"
+          else
+            LATEST_STABLE=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            if [ -z "$LATEST_STABLE" ]; then
+              STABLE_BASE="1.0.0"
+            else
+              IFS='.' read -ra PARTS <<< "${LATEST_STABLE#v}"
+              STABLE_BASE="${PARTS[0]}.${PARTS[1]}.$((${PARTS[2]} + 1))"
+            fi
+            LATEST_BETA=$(git tag --sort=-version:refname | grep -E "^v${STABLE_BASE}-beta\.[0-9]+$" | head -1)
+            if [ -z "$LATEST_BETA" ]; then
+              BETA_NUM=1
+            else
+              BETA_NUM=$(echo "$LATEST_BETA" | sed 's/.*-beta\.//')
+              BETA_NUM=$((BETA_NUM + 1))
+            fi
+            VERSION="${STABLE_BASE}-beta.${BETA_NUM}"
+            IS_PRERELEASE="true"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
-          
+
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
-
-      - name: Derive version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Pack
         run: |
@@ -37,11 +66,11 @@ jobs:
             -p:Version=${{ steps.version.outputs.version }} \
             --output ./artifacts
 
-      - name: Push to NuGet.org
-        run: |
-          dotnet nuget push ./artifacts/*.nupkg \
-            --api-key ${{ secrets.NUGET_API_KEY }} \
-            --source https://api.nuget.org/v3/index.json \
-            --skip-duplicate
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.is_prerelease }}
+          files: ./artifacts/*.nupkg
